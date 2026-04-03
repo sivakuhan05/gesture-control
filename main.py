@@ -1,7 +1,6 @@
 import cv2
 import mediapipe as mp
 
-# Initialize MediaPipe
 mp_hands = mp.solutions.hands
 mp_draw = mp.solutions.drawing_utils
 
@@ -13,9 +12,9 @@ hands = mp_hands.Hands(
 
 cap = cv2.VideoCapture(0)
 
-# Gesture smoothing
 gesture_counter = 0
-gesture_threshold = 1  # almost instant
+gesture_threshold = 1
+current_gesture = None
 
 while True:
     success, frame = cap.read()
@@ -27,36 +26,52 @@ while True:
 
     result = hands.process(rgb)
 
-    detected = False
+    detected_gesture = None
 
     if result.multi_hand_landmarks:
         for hand_landmarks in result.multi_hand_landmarks:
 
-            # Draw landmarks
             mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
-            landmarks = hand_landmarks.landmark
+            lm = hand_landmarks.landmark
 
-            # ---- Looser Thumbs Up Detection ----
-            thumb_up = landmarks[4].y < landmarks[3].y
+            # Finger states
+            thumb_up = lm[4].y < lm[3].y
 
-            index_down = landmarks[8].y > landmarks[6].y
-            middle_down = landmarks[12].y > landmarks[10].y
-            ring_down = landmarks[16].y > landmarks[14].y
-            pinky_down = landmarks[20].y > landmarks[18].y
+            index_up = lm[8].y < lm[6].y
+            middle_up = lm[12].y < lm[10].y
+            ring_up = lm[16].y < lm[14].y
+            pinky_up = lm[20].y < lm[18].y
 
+            index_down = not index_up
+            middle_down = not middle_up
+            ring_down = not ring_up
+            pinky_down = not pinky_up
+
+            # ---- Gesture Detection ----
+
+            # 👍 Thumbs Up
             if thumb_up and index_down and middle_down and ring_down and pinky_down:
-                detected = True
+                detected_gesture = "THUMBS UP 👍"
 
-    # ---- Stability check ----
-    if detected:
+            # ✋ Open Palm
+            elif thumb_up and index_up and middle_up and ring_up and pinky_up:
+                detected_gesture = "OPEN PALM ✋"
+
+            # 👉 Pointing
+            elif index_up and middle_down and ring_down and pinky_down:
+                detected_gesture = "POINT 👉"
+
+    # Stability logic
+    if detected_gesture == current_gesture and detected_gesture is not None:
         gesture_counter += 1
     else:
         gesture_counter = 0
+        current_gesture = detected_gesture
 
-    # ---- Show gesture ----
-    if gesture_counter >= gesture_threshold:
-        cv2.putText(frame, "THUMBS UP 👍", (50, 50),
+    # Show gesture
+    if gesture_counter >= gesture_threshold and current_gesture:
+        cv2.putText(frame, current_gesture, (50, 50),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
     cv2.imshow("Gesture Control", frame)
