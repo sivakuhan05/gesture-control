@@ -1,83 +1,85 @@
 import cv2
+from camera import cleanup, get_frame
 import mediapipe as mp
+import pickle
+import numpy as np
+from pathlib import Path
+from KNN.feature_utils import extract_normalized_landmark_features
 
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
+MODEL_DIR = Path(__file__).resolve().parent / "KNN"
+CONFIDENCE_THRESHOLD = 0.6
 
-hands = mp_hands.Hands(
-    max_num_hands=1,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
-)
+def load_artifacts():
+    with open(MODEL_DIR / "gesture_model.pkl", "rb") as f:
+        model = pickle.load(f)
+    with open(MODEL_DIR / "scaler.pkl", "rb") as f:
+        scaler = pickle.load(f)
+    labels = None
+    labels_file = MODEL_DIR / "labels.pkl"
+    if labels_file.exists():
+        with open(labels_file, "rb") as f:
+            labels = set(pickle.load(f))
+    return model, scaler, labels
 
-cap = cv2.VideoCapture(0)
 
-gesture_counter = 0
-gesture_threshold = 1
-current_gesture = None
+def main():
+    model, scaler, labels = load_artifacts()
+    mp_draw = mp.solutions.drawing_utils
 
-while True:
-    success, frame = cap.read()
-    if not success:
-        break
+    gesture_counter = 0
+    gesture_threshold = 2
+    current_gesture = None
 
-    frame = cv2.flip(frame, 1)
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    try:
+        while True:
+            frame, result = get_frame()
+            if frame is None:
+                break
 
-    result = hands.process(rgb)
+            detected_gesture = None
 
-    detected_gesture = None
+            if result and result.multi_hand_landmarks:
+                for hand_landmarks in result.multi_hand_landmarks:
+                    mp_draw.draw_landmarks(
+                        frame, hand_landmarks, mp.solutions.hands.HAND_CONNECTIONS
+                    )
 
-    if result.multi_hand_landmarks:
-        for hand_landmarks in result.multi_hand_landmarks:
+                    features = extract_normalized_landmark_features(hand_landmarks)
+                    features = np.array(features, dtype=np.float32).reshape(1, -1)
+                    features = scaler.transform(features)
+                    probabilities = model.predict_proba(features)[0]
+                    best_index = int(np.argmax(probabilities))
+                    best_label = model.classes_[best_index]
+                    best_confidence = float(probabilities[best_index])
 
-            mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    if best_confidence >= CONFIDENCE_THRESHOLD:
+                        if labels is None or best_label in labels:
+                            detected_gesture = best_label
 
-            lm = hand_landmarks.landmark
+            if detected_gesture == current_gesture and detected_gesture is not None:
+                gesture_counter += 1
+            else:
+                gesture_counter = 0
+                current_gesture = detected_gesture
 
-            # Finger states
-            thumb_up = lm[4].y < lm[3].y
+            if gesture_counter >= gesture_threshold and current_gesture:
+                cv2.putText(
+                    frame,
+                    current_gesture,
+                    (50, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 255, 0),
+                    2,
+                )
 
-            index_up = lm[8].y < lm[6].y
-            middle_up = lm[12].y < lm[10].y
-            ring_up = lm[16].y < lm[14].y
-            pinky_up = lm[20].y < lm[18].y
+            cv2.imshow("Gesture Control", frame)
+            if cv2.waitKey(1) & 0xFF == 27:
+                break
+    finally:
+        cleanup()
+        cv2.destroyAllWindows()
 
-            index_down = not index_up
-            middle_down = not middle_up
-            ring_down = not ring_up
-            pinky_down = not pinky_up
 
-            # ---- Gesture Detection ----
-
-            # 👍 Thumbs Up
-            if thumb_up and index_down and middle_down and ring_down and pinky_down:
-                detected_gesture = "THUMBS UP 👍"
-
-            # ✋ Open Palm
-            elif thumb_up and index_up and middle_up and ring_up and pinky_up:
-                detected_gesture = "OPEN PALM ✋"
-
-            # 👉 Pointing
-            elif index_up and middle_down and ring_down and pinky_down:
-                detected_gesture = "POINT 👉"
-
-    # Stability logic
-    if detected_gesture == current_gesture and detected_gesture is not None:
-        gesture_counter += 1
-    else:
-        gesture_counter = 0
-        current_gesture = detected_gesture
-
-    # Show gesture
-    if gesture_counter >= gesture_threshold and current_gesture:
-        cv2.putText(frame, current_gesture, (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-
-    cv2.imshow("Gesture Control", frame)
-
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
